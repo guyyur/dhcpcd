@@ -524,11 +524,99 @@ ps_root_recvmsgcb(void *arg, struct ps_msghdr *psm, struct msghdr *msg)
 		return ps_bpf_cmd(ctx, psm, msg);
 #endif
 #ifdef INET
+	case PS_BOOTP_SOCKETS_CREATE:
+		/* Open network sockets for sending.
+		 * This is a small bit wasteful for non sandboxed OS's
+		 * but makes life very easy for unicasting DHCPv6 in non manager
+		 * mode as we no longer care about address selection.
+		 * We can't call shutdown SHUT_RD on the socket because it's
+		 * not connected. All we can do is try and set a zero sized
+		 * receive buffer and just let it overflow.
+		 * Reading from it just to drain it is a waste of CPU time. */
+		if (ctx->udp_wfd == -1) {
+			int buflen = 1;
+
+			ctx->udp_wfd = xsocket(PF_INET,
+				SOCK_RAW | SOCK_CXNB, IPPROTO_UDP);
+			if (ctx->udp_wfd == -1) {
+				logerr("%s: dhcp_openraw", __func__);
+				return -1;
+			} else if (setsockopt(ctx->udp_wfd, SOL_SOCKET, SO_RCVBUF,
+				&buflen, sizeof(buflen)) == -1) {
+				logerr("%s: setsockopt SO_RCVBUF DHCP", __func__);
+				return -1;
+			}
+		}
+		return 0;
+	case PS_BOOTP_SOCKETS_FREE:
+		if (ctx->udp_wfd != -1) {
+			close(ctx->udp_wfd);
+			ctx->udp_wfd = -1;
+		}
+		return 0;
 	case PS_BOOTP:
 		return ps_inet_cmd(ctx, psm, msg);
 #endif
 #ifdef INET6
+	case PS_ND_SOCKETS_CREATE:
+		/* Open network sockets for sending.
+		 * This is a small bit wasteful for non sandboxed OS's
+		 * but makes life very easy for unicasting DHCPv6 in non manager
+		 * mode as we no longer care about address selection.
+		 * We can't call shutdown SHUT_RD on the socket because it's
+		 * not connected. All we can do is try and set a zero sized
+		 * receive buffer and just let it overflow.
+		 * Reading from it just to drain it is a waste of CPU time. */
+		if (ctx->nd_fd == -1) {
+			int buflen = 1;
+
+			ctx->nd_fd = ipv6nd_open(false);
+			if (ctx->nd_fd == -1) {
+				logerr("%s: ipv6nd_open", __func__);
+				return -1;
+			} else if (setsockopt(ctx->nd_fd, SOL_SOCKET, SO_RCVBUF,
+				&buflen, sizeof(buflen)) == -1) {
+				logerr("%s: setsockopt SO_RCVBUF ND", __func__);
+				return -1;
+			}
+		}
+		return 0;
+	case PS_ND_SOCKETS_FREE:
+		if (ctx->nd_fd != -1) {
+			close(ctx->nd_fd);
+			ctx->nd_fd = -1;
+		}
+		return 0;
 #ifdef DHCP6
+	case PS_DHCP6_SOCKETS_CREATE:
+		/* Open network sockets for sending.
+		 * This is a small bit wasteful for non sandboxed OS's
+		 * but makes life very easy for unicasting DHCPv6 in non manager
+		 * mode as we no longer care about address selection.
+		 * We can't call shutdown SHUT_RD on the socket because it's
+		 * not connected. All we can do is try and set a zero sized
+		 * receive buffer and just let it overflow.
+		 * Reading from it just to drain it is a waste of CPU time. */
+		if (ctx->dhcp6_wfd == -1) {
+			int buflen = 1;
+
+			ctx->dhcp6_wfd = dhcp6_openraw();
+			if (ctx->dhcp6_wfd == -1) {
+				logerr("%s: dhcp6_openraw", __func__);
+				return -1;
+			} else if (setsockopt(ctx->dhcp6_wfd, SOL_SOCKET, SO_RCVBUF,
+				&buflen, sizeof(buflen)) == -1) {
+				logerr("%s: setsockopt SO_RCVBUF DHCP6", __func__);
+				return -1;
+			}
+		}
+		return 0;
+	case PS_DHCP6_SOCKETS_FREE:
+		if (ctx->dhcp6_wfd != -1) {
+			close(ctx->dhcp6_wfd);
+			ctx->dhcp6_wfd = -1;
+		}
+		return 0;
 	case PS_DHCP6:	/* FALLTHROUGH */
 #endif
 	case PS_ND:
@@ -692,52 +780,6 @@ ps_root_startcb(struct ps_process *psp)
 		if (setsockopt(ctx->link_fd, SOL_SOCKET, SO_RCVBUF,
 		    &smallbuf, (socklen_t)sizeof(smallbuf)) == -1)
 			logerr("%s: setsockopt(SO_RCVBUF)", __func__);
-	}
-#endif
-
-	/* Open network sockets for sending.
-	 * This is a small bit wasteful for non sandboxed OS's
-	 * but makes life very easy for unicasting DHCPv6 in non manager
-	 * mode as we no longer care about address selection.
-	 * We can't call shutdown SHUT_RD on the socket because it's
-	 * not connected. All we can do is try and set a zero sized
-	 * receive buffer and just let it overflow.
-	 * Reading from it just to drain it is a waste of CPU time. */
-#ifdef INET
-	if (ctx->options & DHCPCD_IPV4) {
-		int buflen = 1;
-
-		ctx->udp_wfd = xsocket(PF_INET,
-		    SOCK_RAW | SOCK_CXNB, IPPROTO_UDP);
-		if (ctx->udp_wfd == -1)
-			logerr("%s: dhcp_openraw", __func__);
-		else if (setsockopt(ctx->udp_wfd, SOL_SOCKET, SO_RCVBUF,
-		    &buflen, sizeof(buflen)) == -1)
-			logerr("%s: setsockopt SO_RCVBUF DHCP", __func__);
-	}
-#endif
-#ifdef INET6
-	if (ctx->options & DHCPCD_IPV6) {
-		int buflen = 1;
-
-		ctx->nd_fd = ipv6nd_open(false);
-		if (ctx->nd_fd == -1)
-			logerr("%s: ipv6nd_open", __func__);
-		else if (setsockopt(ctx->nd_fd, SOL_SOCKET, SO_RCVBUF,
-		    &buflen, sizeof(buflen)) == -1)
-			logerr("%s: setsockopt SO_RCVBUF ND", __func__);
-	}
-#endif
-#ifdef DHCP6
-	if (ctx->options & DHCPCD_IPV6) {
-		int buflen = 1;
-
-		ctx->dhcp6_wfd = dhcp6_openraw();
-		if (ctx->dhcp6_wfd == -1)
-			logerr("%s: dhcp6_openraw", __func__);
-		else if (setsockopt(ctx->dhcp6_wfd, SOL_SOCKET, SO_RCVBUF,
-		    &buflen, sizeof(buflen)) == -1)
-			logerr("%s: setsockopt SO_RCVBUF DHCP6", __func__);
 	}
 #endif
 

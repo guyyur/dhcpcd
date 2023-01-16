@@ -40,6 +40,8 @@ struct ipv4_addr;
 ssize_t ps_inet_openbootp(struct ipv4_addr *);
 ssize_t ps_inet_closebootp(struct ipv4_addr *);
 ssize_t ps_inet_sendbootp(struct interface *, const struct msghdr *);
+ssize_t ps_inet_sockets_create_bootp(struct dhcpcd_ctx *);
+ssize_t ps_inet_sockets_free_bootp(struct dhcpcd_ctx *);
 #endif
 
 #ifdef INET6
@@ -49,10 +51,14 @@ ssize_t ps_inet_opennd(struct interface *);
 ssize_t ps_inet_closend(struct interface *);
 #endif
 ssize_t ps_inet_sendnd(struct interface *, const struct msghdr *);
+ssize_t ps_inet_sockets_create_nd(struct dhcpcd_ctx *);
+ssize_t ps_inet_sockets_free_nd(struct dhcpcd_ctx *);
 #ifdef DHCP6
 ssize_t ps_inet_opendhcp6(struct ipv6_addr *);
 ssize_t ps_inet_closedhcp6(struct ipv6_addr *);
 ssize_t ps_inet_senddhcp6(struct interface *, const struct msghdr *);
+ssize_t ps_inet_sockets_create_dhcp6(struct dhcpcd_ctx *);
+ssize_t ps_inet_sockets_free_dhcp6(struct dhcpcd_ctx *);
 #endif /* DHCP6 */
 #endif /* INET6 */
 #endif

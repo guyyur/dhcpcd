@@ -3807,14 +3807,22 @@ dhcp_free(struct interface *ifp)
 		}
 	}
 	if (ifp == NULL) {
-		if (ctx->udp_rfd != -1) {
-			eloop_event_delete(ctx->eloop, ctx->udp_rfd);
-			close(ctx->udp_rfd);
-			ctx->udp_rfd = -1;
-		}
-		if (ctx->udp_wfd != -1) {
-			close(ctx->udp_wfd);
-			ctx->udp_wfd = -1;
+#ifdef PRIVSEP
+		if (IN_PRIVSEP(ctx))
+			ps_inet_sockets_free_bootp(ctx);
+		else
+#endif
+		{
+			if (ctx->udp_rfd != -1) {
+				eloop_event_delete(ctx->eloop, ctx->udp_rfd);
+				close(ctx->udp_rfd);
+				ctx->udp_rfd = -1;
+			}
+
+			if (ctx->udp_wfd != -1) {
+				close(ctx->udp_wfd);
+				ctx->udp_wfd = -1;
+			}
 		}
 
 		free(ctx->opt_buffer);
@@ -3938,27 +3946,38 @@ dhcp_start1(void *arg)
 	if (!(ifo->options & DHCPCD_IPV4))
 		return;
 
-	/* Listen on *.*.*.*:bootpc so that the kernel never sends an
-	 * ICMP port unreachable message back to the DHCP server.
-	 * Only do this in manager mode so we don't swallow messages
-	 * for dhcpcd running on another interface. */
-	if ((ctx->options & (DHCPCD_MANAGER|DHCPCD_PRIVSEP)) == DHCPCD_MANAGER
-	    && ctx->udp_rfd == -1)
-	{
-		ctx->udp_rfd = dhcp_openudp(NULL);
-		if (ctx->udp_rfd == -1) {
+#ifdef PRIVSEP
+	if (IN_PRIVSEP(ctx)) {
+		if (ps_inet_sockets_create_bootp(ctx) == -1) {
 			logerr(__func__);
 			return;
 		}
-		if (eloop_event_add(ctx->eloop, ctx->udp_rfd, ELE_READ,
-		    dhcp_handleudp, ctx) == -1)
-			logerr("%s: eloop_event_add", __func__);
 	}
-	if (!IN_PRIVSEP(ctx) && ctx->udp_wfd == -1) {
-		ctx->udp_wfd = xsocket(PF_INET, SOCK_RAW|SOCK_CXNB,IPPROTO_UDP);
+	else
+#endif
+	{
+		/* Listen on *.*.*.*:bootpc so that the kernel never sends an
+		* ICMP port unreachable message back to the DHCP server.
+		* Only do this in manager mode so we don't swallow messages
+		* for dhcpcd running on another interface. */
+		if (ctx->options & DHCPCD_MANAGER && ctx->udp_rfd == -1)
+		{
+			ctx->udp_rfd = dhcp_openudp(NULL);
+			if (ctx->udp_rfd == -1) {
+				logerr(__func__);
+				return;
+			}
+			if (eloop_event_add(ctx->eloop, ctx->udp_rfd, ELE_READ,
+				dhcp_handleudp, ctx) == -1)
+				logerr("%s: eloop_event_add", __func__);
+		}
+
 		if (ctx->udp_wfd == -1) {
-			logerr(__func__);
-			return;
+			ctx->udp_wfd = xsocket(PF_INET, SOCK_RAW|SOCK_CXNB,IPPROTO_UDP);
+			if (ctx->udp_wfd == -1) {
+				logerr(__func__);
+				return;
+			}
 		}
 	}
 

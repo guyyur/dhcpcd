@@ -3886,24 +3886,34 @@ dhcp6_start1(void *arg)
 	size_t i;
 	const struct dhcp_compat *dhc;
 
-	if ((ctx->options & (DHCPCD_MANAGER|DHCPCD_PRIVSEP)) == DHCPCD_MANAGER &&
-	    ctx->dhcp6_rfd == -1)
-	{
-		ctx->dhcp6_rfd = dhcp6_openudp(0, NULL);
-		if (ctx->dhcp6_rfd == -1) {
+#ifdef PRIVSEP
+	if (IN_PRIVSEP(ctx)) {
+		if (ps_inet_sockets_create_dhcp6(ctx) == -1) {
 			logerr(__func__);
 			return;
 		}
-		if (eloop_event_add(ctx->eloop, ctx->dhcp6_rfd, ELE_READ,
-		    dhcp6_recvctx, ctx) == -1)
-			logerr("%s: eloop_event_add", __func__);
 	}
+	else
+#endif
+	{
+		if (ctx->options & DHCPCD_MANAGER && ctx->dhcp6_rfd == -1)
+		{
+			ctx->dhcp6_rfd = dhcp6_openudp(0, NULL);
+			if (ctx->dhcp6_rfd == -1) {
+				logerr(__func__);
+				return;
+			}
+			if (eloop_event_add(ctx->eloop, ctx->dhcp6_rfd, ELE_READ,
+			    dhcp6_recvctx, ctx) == -1)
+				logerr("%s: eloop_event_add", __func__);
+		}
 
-	if (!IN_PRIVSEP(ctx) && ctx->dhcp6_wfd == -1) {
-		ctx->dhcp6_wfd = dhcp6_openraw();
 		if (ctx->dhcp6_wfd == -1) {
-			logerr(__func__);
-			return;
+			ctx->dhcp6_wfd = dhcp6_openraw();
+			if (ctx->dhcp6_wfd == -1) {
+				logerr(__func__);
+				return;
+			}
 		}
 	}
 
@@ -4136,10 +4146,24 @@ dhcp6_freedrop(struct interface *ifp, int drop, const char *reason)
 				break;
 		}
 	}
-	if (ifp == NULL && ctx->dhcp6_rfd != -1) {
-		eloop_event_delete(ctx->eloop, ctx->dhcp6_rfd);
-		close(ctx->dhcp6_rfd);
-		ctx->dhcp6_rfd = -1;
+	if (ifp == NULL) {
+#ifdef PRIVSEP
+		if (IN_PRIVSEP(ctx))
+			ps_inet_sockets_free_dhcp6(ctx);
+		else
+#endif
+		{
+			if (ctx->dhcp6_rfd != -1) {
+				eloop_event_delete(ctx->eloop, ctx->dhcp6_rfd);
+				close(ctx->dhcp6_rfd);
+				ctx->dhcp6_rfd = -1;
+			}
+
+			if (ctx->dhcp6_wfd != -1) {
+				close(ctx->dhcp6_wfd);
+				ctx->dhcp6_wfd = -1;
+			}
+		}
 	}
 }
 

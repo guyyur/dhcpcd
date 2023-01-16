@@ -97,29 +97,24 @@ bool
 ps_inet_canstart(const struct dhcpcd_ctx *ctx)
 {
 
-#ifdef INET
-	if ((ctx->options & (DHCPCD_IPV4 | DHCPCD_MANAGER)) ==
-	    (DHCPCD_IPV4 | DHCPCD_MANAGER))
-		return true;
+	/*
+	 * The only time we will never need the network proxy
+	 * is for an IPv4 only build that is not started in manager mode.
+	 * Even if IPv4 and IPv6 are disabled globally, an interface
+	 * might arrive later which needs it enabled.
+	 */
+#if defined(INET) && !defined(INET6)
+	return ctx->options & DHCPCD_MANAGER ? true : false;
+#else
+	UNUSED(ctx);
+	return true;
 #endif
-#if defined(INET6) && !defined(__sun)
-	if (ctx->options & DHCPCD_IPV6)
-		return true;
-#endif
-#ifdef DHCP6
-	if ((ctx->options & (DHCPCD_IPV6 | DHCPCD_MANAGER)) ==
-	    (DHCPCD_IPV6 | DHCPCD_MANAGER))
-		return true;
-#endif
-
-	return false;
 }
 
 static int
 ps_inet_startcb(struct ps_process *psp)
 {
 	struct dhcpcd_ctx *ctx = psp->psp_ctx;
-	int ret = 0;
 
 	if (ctx->options & DHCPCD_MANAGER)
 		setproctitle("[network proxy]");
@@ -133,84 +128,32 @@ ps_inet_startcb(struct ps_process *psp)
 	close(ctx->ps_data_fd);
 	ctx->ps_data_fd = -1;
 
-	errno = 0;
-
-#ifdef INET
-	if ((ctx->options & (DHCPCD_IPV4 | DHCPCD_MANAGER)) ==
-	    (DHCPCD_IPV4 | DHCPCD_MANAGER))
-	{
-		ctx->udp_rfd = dhcp_openudp(NULL);
-		if (ctx->udp_rfd == -1)
-			logerr("%s: dhcp_open", __func__);
-#ifdef PRIVSEP_RIGHTS
-		else if (ps_rights_limit_fd_rdonly(ctx->udp_rfd) == -1) {
-			logerr("%s: ps_rights_limit_fd_rdonly", __func__);
-			close(ctx->udp_rfd);
-			ctx->udp_rfd = -1;
-		}
-#endif
-		else if (eloop_event_add(ctx->eloop, ctx->udp_rfd, ELE_READ,
-		    ps_inet_recvbootp, ctx) == -1)
-		{
-			logerr("%s: eloop_event_add DHCP", __func__);
-			close(ctx->udp_rfd);
-			ctx->udp_rfd = -1;
-		} else
-			ret++;
-	}
-#endif
+	/* Open the socket before privileges are dropped */
 #if defined(INET6) && !defined(__sun)
-	if (ctx->options & DHCPCD_IPV6) {
-		ctx->nd_fd = ipv6nd_open(true);
-		if (ctx->nd_fd == -1)
-			logerr("%s: ipv6nd_open", __func__);
-#ifdef PRIVSEP_RIGHTS
-		else if (ps_rights_limit_fd_rdonly(ctx->nd_fd) == -1) {
-			logerr("%s: ps_rights_limit_fd_rdonly", __func__);
-			close(ctx->nd_fd);
-			ctx->nd_fd = -1;
-		}
-#endif
-		else if (eloop_event_add(ctx->eloop, ctx->nd_fd, ELE_READ,
-		    ps_inet_recvra, ctx) == -1)
-		{
-			logerr("%s: eloop_event_add RA", __func__);
-			close(ctx->nd_fd);
-			ctx->nd_fd = -1;
-		} else
-			ret++;
-	}
-#endif
-#ifdef DHCP6
-	if ((ctx->options & (DHCPCD_IPV6 | DHCPCD_MANAGER)) ==
-	    (DHCPCD_IPV6 | DHCPCD_MANAGER))
-	{
-		ctx->dhcp6_rfd = dhcp6_openudp(0, NULL);
-		if (ctx->dhcp6_rfd == -1)
-			logerr("%s: dhcp6_open", __func__);
-#ifdef PRIVSEP_RIGHTS
-		else if (ps_rights_limit_fd_rdonly(ctx->dhcp6_rfd) == -1) {
-			logerr("%s: ps_rights_limit_fd_rdonly", __func__);
-			close(ctx->dhcp6_rfd);
-			ctx->dhcp6_rfd = -1;
-		}
-#endif
-		else if (eloop_event_add(ctx->eloop, ctx->dhcp6_rfd, ELE_READ,
-		    ps_inet_recvdhcp6, ctx) == -1)
-		{
-			logerr("%s: eloop_event_add DHCP6", __func__);
-			close(ctx->dhcp6_rfd);
-			ctx->dhcp6_rfd = -1;
-		} else
-			ret++;
-	}
-#endif
-
-	if (ret == 0 && errno == 0) {
-		errno = ENXIO;
+	ctx->nd_fd = ipv6nd_open(true);
+	if (ctx->nd_fd == -1) {
+		logerr("%s: ipv6nd_open", __func__);
 		return -1;
 	}
-	return ret;
+#ifdef PRIVSEP_RIGHTS
+	else if (ps_rights_limit_fd_rdonly(ctx->nd_fd) == -1) {
+		logerr("%s: ps_rights_limit_fd_rdonly", __func__);
+		close(ctx->nd_fd);
+		ctx->nd_fd = -1;
+		return -1;
+	}
+#endif
+	else if (eloop_event_add(ctx->eloop, ctx->nd_fd, ELE_READ,
+	    ps_inet_recvra, ctx) == -1)
+	{
+		logerr("%s: eloop_event_add RA", __func__);
+		close(ctx->nd_fd);
+		ctx->nd_fd = -1;
+		return -1;
+	}
+#endif
+
+	return 0;
 }
 
 static bool
@@ -302,13 +245,105 @@ dosend:
 	return sendmsg(s, msg, 0);
 }
 
+static ssize_t
+ps_inet_recvmsgcb(void *arg, struct ps_msghdr *psm, struct msghdr *msg)
+{
+	struct dhcpcd_ctx *ctx = arg;
+
+#ifdef PRIVSEP_DEBUG
+	logerrx("%s: IN cmd %x", __func__, psm->ps_cmd);
+#endif
+
+	switch (psm->ps_cmd) {
+#ifdef INET
+	case PS_BOOTP_SOCKETS_CREATE:
+		if (ctx->options & DHCPCD_MANAGER && ctx->udp_rfd == -1)
+		{
+			ctx->udp_rfd = dhcp_openudp(NULL);
+			if (ctx->udp_rfd == -1) {
+				logerr("%s: dhcp_open", __func__);
+				return -1;
+			}
+#ifdef PRIVSEP_RIGHTS
+			else if (ps_rights_limit_fd_rdonly(ctx->udp_rfd) == -1) {
+				logerr("%s: ps_rights_limit_fd_rdonly", __func__);
+				close(ctx->udp_rfd);
+				ctx->udp_rfd = -1;
+				return -1;
+			}
+#endif
+			else if (eloop_event_add(ctx->eloop, ctx->udp_rfd, ELE_READ,
+				ps_inet_recvbootp, ctx) == -1)
+			{
+				logerr("%s: eloop_event_add DHCP", __func__);
+				close(ctx->udp_rfd);
+				ctx->udp_rfd = -1;
+				return -1;
+			}
+		}
+		break;
+	case PS_BOOTP_SOCKETS_FREE:
+		if (ctx->udp_rfd != -1) {
+			eloop_event_delete(ctx->eloop, ctx->udp_rfd);
+			close(ctx->udp_rfd);
+			ctx->udp_rfd = -1;
+		}
+		break;
+#endif
+#ifdef INET6
+#ifdef DHCP6
+	case PS_DHCP6_SOCKETS_CREATE:
+		if (ctx->options & DHCPCD_MANAGER && ctx->dhcp6_rfd == -1)
+		{
+			ctx->dhcp6_rfd = dhcp6_openudp(0, NULL);
+			if (ctx->dhcp6_rfd == -1) {
+				logerr("%s: dhcp6_open", __func__);
+				return -1;
+			}
+#ifdef PRIVSEP_RIGHTS
+			else if (ps_rights_limit_fd_rdonly(ctx->dhcp6_rfd) == -1) {
+				logerr("%s: ps_rights_limit_fd_rdonly", __func__);
+				close(ctx->dhcp6_rfd);
+				ctx->dhcp6_rfd = -1;
+				return -1;
+			}
+#endif
+			else if (eloop_event_add(ctx->eloop, ctx->dhcp6_rfd, ELE_READ,
+				ps_inet_recvdhcp6, ctx) == -1)
+			{
+				logerr("%s: eloop_event_add DHCP6", __func__);
+				close(ctx->dhcp6_rfd);
+				ctx->dhcp6_rfd = -1;
+				return -1;
+			}
+		}
+		break;
+	case PS_DHCP6_SOCKETS_FREE:
+		if (ctx->dhcp6_rfd != -1) {
+			eloop_event_delete(ctx->eloop, ctx->dhcp6_rfd);
+			close(ctx->dhcp6_rfd);
+			ctx->dhcp6_rfd = -1;
+		}
+		break;
+#endif
+#endif
+	default:
+		logerrx("%s: unknown command %x", __func__, psm->ps_cmd);
+		errno = ENOTSUP;
+		return -1;
+	}
+
+	return 0;
+}
+
 static void
 ps_inet_recvmsg(void *arg, unsigned short events)
 {
 	struct ps_process *psp = arg;
 
 	/* Receive shutdown */
-	if (ps_recvpsmsg(psp->psp_ctx, psp->psp_fd, events, NULL, NULL) == -1)
+	if (ps_recvpsmsg(psp->psp_ctx, psp->psp_fd, events,
+	    ps_inet_recvmsgcb, psp->psp_ctx) == -1)
 		logerr(__func__);
 }
 
@@ -606,6 +641,22 @@ ps_inet_cmd(struct dhcpcd_ctx *ctx, struct ps_msghdr *psm, struct msghdr *msg)
 	return start;
 }
 
+static ssize_t
+ps_inet_do_sockets_cmd(struct dhcpcd_ctx *ctx, uint16_t cmd, bool send_inet)
+{
+	struct ps_msghdr psm = {
+		.ps_cmd = cmd,
+	};
+	ssize_t err;
+
+	err = ps_sendpsmmsg(ctx, ctx->ps_root->psp_fd, &psm, NULL);
+	if (err == -1)
+		return err;
+	if (send_inet && ctx->ps_inet->psp_fd != -1)
+		return ps_sendpsmmsg(ctx, ctx->ps_inet->psp_fd, &psm, NULL);
+	return 0;
+}
+
 #ifdef INET
 static ssize_t
 ps_inet_in_docmd(struct ipv4_addr *ia, uint16_t cmd, const struct msghdr *msg)
@@ -645,6 +696,20 @@ ps_inet_sendbootp(struct interface *ifp, const struct msghdr *msg)
 	struct dhcpcd_ctx *ctx = ifp->ctx;
 
 	return ps_sendmsg(ctx, ctx->ps_root->psp_fd, PS_BOOTP, 0, msg);
+}
+
+ssize_t
+ps_inet_sockets_create_bootp(struct dhcpcd_ctx *ctx)
+{
+
+	return ps_inet_do_sockets_cmd(ctx, PS_BOOTP_SOCKETS_CREATE, true);
+}
+
+ssize_t
+ps_inet_sockets_free_bootp(struct dhcpcd_ctx *ctx)
+{
+
+	return ps_inet_do_sockets_cmd(ctx, PS_BOOTP_SOCKETS_FREE, true);
 }
 #endif /* INET */
 
@@ -696,6 +761,20 @@ ps_inet_sendnd(struct interface *ifp, const struct msghdr *msg)
 }
 #endif
 
+ssize_t
+ps_inet_sockets_create_nd(struct dhcpcd_ctx *ctx)
+{
+
+	return ps_inet_do_sockets_cmd(ctx, PS_ND_SOCKETS_CREATE, false);
+}
+
+ssize_t
+ps_inet_sockets_free_nd(struct dhcpcd_ctx *ctx)
+{
+
+	return ps_inet_do_sockets_cmd(ctx, PS_ND_SOCKETS_FREE, false);
+}
+
 #ifdef DHCP6
 static ssize_t
 ps_inet_in6_docmd(struct ipv6_addr *ia, uint16_t cmd, const struct msghdr *msg)
@@ -734,6 +813,20 @@ ps_inet_senddhcp6(struct interface *ifp, const struct msghdr *msg)
 	struct dhcpcd_ctx *ctx = ifp->ctx;
 
 	return ps_sendmsg(ctx, ctx->ps_root->psp_fd, PS_DHCP6, 0, msg);
+}
+
+ssize_t
+ps_inet_sockets_create_dhcp6(struct dhcpcd_ctx *ctx)
+{
+
+	return ps_inet_do_sockets_cmd(ctx, PS_DHCP6_SOCKETS_CREATE, true);
+}
+
+ssize_t
+ps_inet_sockets_free_dhcp6(struct dhcpcd_ctx *ctx)
+{
+
+	return ps_inet_do_sockets_cmd(ctx, PS_DHCP6_SOCKETS_FREE, true);
 }
 #endif /* DHCP6 */
 #endif /* INET6 */

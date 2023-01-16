@@ -374,6 +374,10 @@ ipv6nd_sendrsprobe(void *arg)
 	logdebugx("%s: sending Router Solicitation", ifp->name);
 #ifdef PRIVSEP
 	if (IN_PRIVSEP(ifp->ctx)) {
+		if (ps_inet_sockets_create_nd(ctx) == -1) {
+			logerr(__func__);
+			return;
+		}
 		if (ps_inet_sendnd(ifp, &msg) == -1)
 			logerr(__func__);
 		goto sent;
@@ -874,10 +878,17 @@ ipv6nd_free(struct interface *ifp)
 			break;
 	}
 	if (ifp == NULL) {
-		if (ctx->nd_fd != -1) {
-			eloop_event_delete(ctx->eloop, ctx->nd_fd);
-			close(ctx->nd_fd);
-			ctx->nd_fd = -1;
+#ifdef PRIVSEP
+		if (IN_PRIVSEP(ctx))
+			ps_inet_sockets_free_nd(ctx);
+		else
+#endif
+		{
+			if (ctx->nd_fd != -1) {
+				eloop_event_delete(ctx->eloop, ctx->nd_fd);
+				close(ctx->nd_fd);
+				ctx->nd_fd = -1;
+			}
 		}
 	}
 #endif
