@@ -40,6 +40,8 @@ struct ipv4_addr;
 ssize_t ps_inet_openbootp(struct ipv4_addr *);
 ssize_t ps_inet_closebootp(struct ipv4_addr *);
 ssize_t ps_inet_sendbootp(struct interface *, const struct msghdr *);
+ssize_t ps_inet_sockets_create_bootp(struct dhcpcd_ctx *);
+ssize_t ps_inet_sockets_free_bootp(struct dhcpcd_ctx *);
 #endif
 
 #ifdef INET6

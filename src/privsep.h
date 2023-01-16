@@ -88,6 +88,10 @@
 #define	PS_SYSCTL_OLEN		0x0001
 #define	PS_SYSCTL_ODATA		0x0002
 
+/* Protocol Sockets commands */
+#define	PS_SOCKETS_CREATE	0x1000
+#define	PS_SOCKETS_FREE		0x2000
+
 /* Process commands */
 #define	PS_START		0x4000
 #define	PS_STOP			0x8000

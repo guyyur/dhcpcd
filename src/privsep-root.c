@@ -470,6 +470,63 @@ ps_root_dogetifaddrs(void **rdata, size_t *rlen)
 }
 #endif
 
+ssize_t
+ps_root_sockets_create(struct dhcpcd_ctx *ctx, struct ps_msghdr *psm, uint16_t cmd, struct ps_process *psp)
+{
+	switch (cmd) {
+#ifdef INET
+	case PS_BOOTP:
+		if (ctx->udp_wfd == -1) {
+			int buflen = 1;
+
+			ctx->udp_wfd = xsocket(PF_INET,
+				SOCK_RAW | SOCK_CXNB, IPPROTO_UDP);
+			if (ctx->udp_wfd == -1) {
+				logerr("%s: dhcp_openraw", __func__);
+				return -1;
+			}
+			else if (setsockopt(ctx->udp_wfd, SOL_SOCKET, SO_RCVBUF,
+				&buflen, sizeof(buflen)) == -1) {
+				logerr("%s: setsockopt SO_RCVBUF DHCP", __func__);
+				return -1;
+			}
+		}
+		if (psp != NULL)
+			return ps_sendpsmmsg(ctx, psp->psp_fd, psm, NULL);
+		break;
+#endif
+	default:
+		logerrx("%s: unknown command %x", __func__, psm->ps_cmd);
+		errno = ENOTSUP;
+		return -1;
+	}
+
+	return 0;
+}
+
+ssize_t
+ps_root_sockets_free(struct dhcpcd_ctx *ctx, struct ps_msghdr *psm, uint16_t cmd, struct ps_process *psp)
+{
+	switch (cmd) {
+#ifdef INET
+	case PS_BOOTP:
+		if (ctx->udp_wfd != -1) {
+			close(ctx->udp_wfd);
+			ctx->udp_wfd = -1;
+		}
+		if (psp != NULL)
+			return ps_sendpsmmsg(ctx, psp->psp_fd, psm, NULL);
+		break;
+#endif
+	default:
+		logerrx("%s: unknown command %x", __func__, psm->ps_cmd);
+		errno = ENOTSUP;
+		return -1;
+	}
+
+	return 0;
+}
+
 static ssize_t
 ps_root_recvmsgcb(void *arg, struct ps_msghdr *psm, struct msghdr *msg)
 {
@@ -484,12 +541,18 @@ ps_root_recvmsgcb(void *arg, struct ps_msghdr *psm, struct msghdr *msg)
 	ssize_t err;
 	bool free_rdata = false;
 
-	cmd = (uint16_t)(psm->ps_cmd & ~(PS_START | PS_STOP));
+	cmd = (uint16_t)(psm->ps_cmd & ~(PS_START | PS_STOP | PS_SOCKETS_CREATE | PS_SOCKETS_FREE));
 	psp = ps_findprocess(ctx, &psm->ps_id);
 
 #ifdef PRIVSEP_DEBUG
 	logerrx("%s: IN cmd %x, psp %p", __func__, psm->ps_cmd, psp);
 #endif
+
+	if (psm->ps_cmd & PS_SOCKETS_CREATE)
+		return ps_root_sockets_create(ctx, psm, cmd, psp);
+
+	if (psm->ps_cmd & PS_SOCKETS_FREE)
+		return ps_root_sockets_free(ctx, psm, cmd, psp);
 
 	if (psp != NULL) {
 		if (psm->ps_cmd & PS_STOP) {
@@ -703,19 +766,6 @@ ps_root_startcb(struct ps_process *psp)
 	 * not connected. All we can do is try and set a zero sized
 	 * receive buffer and just let it overflow.
 	 * Reading from it just to drain it is a waste of CPU time. */
-#ifdef INET
-	if (ctx->options & DHCPCD_IPV4) {
-		int buflen = 1;
-
-		ctx->udp_wfd = xsocket(PF_INET,
-		    SOCK_RAW | SOCK_CXNB, IPPROTO_UDP);
-		if (ctx->udp_wfd == -1)
-			logerr("%s: dhcp_openraw", __func__);
-		else if (setsockopt(ctx->udp_wfd, SOL_SOCKET, SO_RCVBUF,
-		    &buflen, sizeof(buflen)) == -1)
-			logerr("%s: setsockopt SO_RCVBUF DHCP", __func__);
-	}
-#endif
 #ifdef INET6
 	if (ctx->options & DHCPCD_IPV6) {
 		int buflen = 1;
